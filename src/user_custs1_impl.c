@@ -937,7 +937,6 @@ void user_svc1_long_val_wr_ind_handler(ke_msg_id_t const msgid, struct custs1_va
   } else if (param->value[0] >= 0xa0) {
     // 处理OTA升级命令
     ota_handle((u8 *)param->value);
-    beep();
   }
 }
 
