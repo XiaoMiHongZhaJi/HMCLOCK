@@ -50,19 +50,22 @@ int app_connection_idx __SECTION_ZERO("retention_mem_area0");                   
 timer_hnd app_clock_timer_used __SECTION_ZERO("retention_mem_area0");                // 时钟定时器句柄，retention内存保存
 timer_hnd app_param_update_request_timer_used __SECTION_ZERO("retention_mem_area0"); // 参数更新请求定时器句柄，retention内存保存
 
-int adv_state = 0;           // 广播状态：0-未广播，1-正在广播
-static int otp_btaddr[2];    // 从OTP读取的蓝牙地址
-static int otp_boot;         // 从OTP读取的启动相关数据
-static char adv_name[20];    // 广播名称缓冲区
-char *bt_id = adv_name + 12; // 蓝牙ID在广播名称中的起始位置
-int clock_interval;          // 时钟更新间隔（秒）
-int clock_fixup_value;       // 时钟修正值
-int clock_fixup_count;       // 时钟修正计数器
+int adv_state = 0;                   // 广播状态：0-未广播，1-正在广播
+static int otp_btaddr[2];            // 从OTP读取的蓝牙地址
+static int otp_boot;                 // 从OTP读取的启动相关数据
+static char adv_name[20];            // 广播名称缓冲区
+char *bt_id = adv_name + 12;         // 蓝牙ID在广播名称中的起始位置
+int clock_interval;                  // 时钟更新间隔（秒）
+int clock_fixup_value;               // 时钟修正值
+int clock_fixup_count;               // 时钟修正计数器
+static int first_timer_trigger = 0;  // 标志：是否为第一次定时器触发（用于整分钟对齐）
+static int first_update_seconds = 0; // 第一次触发时需要更新的秒数
 
 // EPD版本信息（volatile确保不被优化，用于版本检测）
 const volatile u32 epd_version[3] = {0xF9A51379, ~0xF9A51379, EPD_VERSION};
 
 extern int year, month; // 当前时间变量
+extern int second;      // 当前秒数，用于计算到整分钟的剩余时间
 
 /*
  * 函数定义
@@ -170,6 +173,8 @@ void user_app_init(void) {
   clock_fixup_value = 0; // 初始化时钟修正值
   clock_fixup_count = 0; // 初始化时钟修正计数器
 
+  first_timer_trigger = 0; // 初始化第一次触发标志
+
   adv_state = 0;           // 初始化为未广播状态
   fspi_config(0x00030605); // 配置FSPI接口
 
@@ -227,13 +232,23 @@ extern int adcval; // ADC电压值变量
  */
 static void app_clock_timer_cb(void) {
   int adj = clock_fixup(); // 获取时钟修正值
+  int update_seconds;
+
+  if (first_timer_trigger) {
+    first_timer_trigger = 0;
+    update_seconds = first_update_seconds;
+    printk("First trigger: second=%d, update_seconds=%d\n", second, update_seconds);
+  } else {
+    update_seconds = clock_interval;
+  }
+
   // 重启定时器，应用修正后的间隔（单位：10ms，故乘以100）
   app_clock_timer_used = app_easy_timer(clock_interval * 100 + adj, app_clock_timer_cb);
 
   // 确定屏幕更新标志（根据时钟状态）
   int flags = UPDATE_FLY; // 默认快速更新
   // 更新时钟并打印
-  int stat = clock_update(clock_interval);
+  int stat = clock_update(update_seconds);
   clock_print();
 
   // 如果已连接，则推送时钟数据
@@ -249,8 +264,14 @@ static void app_clock_timer_cb(void) {
     return;
   }
 
-  // 如果是快速更新，更新ADC数据,若电量不足则不继续执行任务
-  if (flags == 4) {
+  // 0: 状态不变  1: 分钟改变  2: 分钟改变10分钟  3: 小时改变  4: 天数改变
+  if (stat >= 3) {
+    flags = DRAW_BT | UPDATE_FULL; // 小时改变 蓝牙图标 + 全量更新
+    beep();
+  } else if (stat >= 2) {
+    flags = UPDATE_FAST; // 10分钟 快速更新
+  } else {
+    // 如果是快速更新，更新ADC数据,若电量不足则不继续执行任务
     adc1_update();
     // ADC电压小于2.6V
     if (adcval < 1360) {
@@ -260,12 +281,6 @@ static void app_clock_timer_cb(void) {
       app_easy_timer_cancel(app_clock_timer_used);
       return;
     }
-  }
-
-  if (stat >= 3) {
-    flags = DRAW_BT | UPDATE_FULL; // 需要蓝牙图标+全量更新
-  } else if (stat >= 2) {
-    flags = DRAW_BT | UPDATE_FAST; // 需要蓝牙图标+快速更新
   }
 
   // 如果需要显示蓝牙图标，启动广播
@@ -282,12 +297,23 @@ static void app_clock_timer_cb(void) {
 /**
  ****************************************************************************************
  * @brief 重启应用时钟定时器
+ *        计算到下一个整分钟的剩余秒数，设置定时器使其在整分钟时触发
  ****************************************************************************************
  */
 void app_clock_timer_restart(void) {
   app_easy_timer_cancel(app_clock_timer_used); // 取消当前定时器
-  // 以默认间隔重启定时器
-  app_clock_timer_used = app_easy_timer(clock_interval * 100, app_clock_timer_cb);
+
+  // 计算到下一个整分钟的剩余秒数
+  int remaining_seconds = (second == 0) ? 60 : (60 - second);
+
+  // 保存第一次触发时需要更新的秒数（使时钟进位到整分钟）
+  first_update_seconds = remaining_seconds;
+
+  // 标记为第一次触发，用于在回调中正确处理时钟更新
+  first_timer_trigger = 1;
+
+  // 第一次在整分钟触发，之后每60秒触发一次
+  app_clock_timer_used = app_easy_timer(remaining_seconds * 100, app_clock_timer_cb);
 }
 
 /**
@@ -307,13 +333,13 @@ void user_app_on_db_init_complete(void) {
   clock_print();
   clock_push();
 
-  // 绘制时钟（带蓝牙图标+全量更新）并启动广播
+  // 绘制时钟（带蓝牙图标 + 全量更新）并启动广播
   // clock_draw(DRAW_BT|UPDATE_FULL);
   QR_draw();
   user_app_adv_start();
 
-  // 启动时钟定时器
-  app_clock_timer_used = app_easy_timer(clock_interval * 100, app_clock_timer_cb);
+  // 启动时钟定时器，对齐到整分钟
+  app_clock_timer_restart();
 }
 
 /**
@@ -323,19 +349,20 @@ void user_app_on_db_init_complete(void) {
  ****************************************************************************************
  */
 void user_app_adv_start(void) {
-  u8 vbuf[4]; // 版本信息AD结构缓冲区
-
   // 如果已在广播状态，直接返回
-  if (adv_state)
+  if (adv_state) {
     return;
+  }
   adv_state = 1; // 标记为正在广播
+
+  u8 vbuf[4]; // 版本信息AD结构缓冲区
 
   // 获取广播命令结构
   struct gapm_start_advertise_cmd *cmd = app_easy_gap_undirected_advertise_get_active();
   // 添加设备名称AD结构
   app_add_ad_struct(cmd, adv_name, adv_name[0] + 1, 1);
 
-  // 构造版本信息AD结构（长度+类型+版本号低两位）
+  // 构造版本信息AD结构（长度 + 类型 + 版本号低两位）
   vbuf[0] = 0x03;
   vbuf[1] = GAP_AD_TYPE_MANU_SPECIFIC_DATA;
   vbuf[2] = EPD_VERSION & 0xff;
@@ -399,8 +426,9 @@ void user_app_adv_undirect_complete(uint8_t status) {
     if (year == 2025 && month <= 5) {
       // 在2024年2月执行特定操作（占位符）
       QR_draw();
-    } else
+    } else {
       clock_draw(UPDATE_FLY);
+    }
   }
 }
 
@@ -423,17 +451,14 @@ void user_app_disconnect(struct gapc_disconnect_ind const *param) {
   app_connection_idx = -1; // 重置连接索引为无效值
   adv_state = 0;           // 标记为未广播
 
-  // 非远程用户主动断开时，重启广播；否则仅刷新屏幕
-  if (param->reason != CO_ERROR_REMOTE_USER_TERM_CON) {
-    user_app_adv_start();
+  // 未进行初始化,则始终展示二维码
+  if (year == 2025 && month <= 5) {
+    // 在2024年2月执行特定操作（占位符）
+    QR_draw();
   } else {
-    // 未进行初始化,则始终展示二维码
-    if (year == 2025 && month <= 5) {
-      // 在2024年2月执行特定操作（占位符）
-      QR_draw();
-    } else
-      clock_draw(UPDATE_FLY);
+    clock_draw(UPDATE_FLY);
   }
+  user_app_adv_start();
 }
 
 /**

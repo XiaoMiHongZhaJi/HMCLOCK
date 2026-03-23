@@ -82,6 +82,7 @@ void clock_push(void);
 void clock_draw(int full);
 void QR_draw(void);
 void LB_draw(void);
+void beep(void);
 
 /**
  ****************************************************************************************

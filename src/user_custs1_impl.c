@@ -733,7 +733,7 @@ void QR_draw() {
   memset(fb_rr, 0x00, scr_h * line_bytes);
 
   draw_qr_code(5, 5, 3, QR_31x31);
-  draw_text(100, 5, "Bluetooth", BLACK);
+  draw_text(100, 5, "Bluetooth xmhzj", BLACK);
   draw_text(100, 20, "DLG-CLOCK ", BLACK);
   draw_text(170, 20, bt_id, BLACK);
 
@@ -768,6 +768,23 @@ void LB_draw() {
   // 更新时如果深度休眠，会花屏。 这里暂时关闭休眠。
   arch_set_sleep_mode(ARCH_SLEEP_OFF);
   epd_wait_hnd = app_easy_timer(40, epd_wait_timer);
+}
+
+void buzzer_beep(int duration_ms) {
+  int interval = 3;
+  int cycle = duration_ms / (2 * interval);
+  for (int i = 0; i < cycle; i++) {
+    GPIO_SetActive(GPIO_PORT_2, GPIO_PIN_5);
+    delay_ms(1);
+    GPIO_SetInactive(GPIO_PORT_2, GPIO_PIN_5);
+    delay_ms(interval);
+  }
+}
+
+void beep(void) {
+  buzzer_beep(150);
+  delay_ms(150);
+  buzzer_beep(150);
 }
 
 /**
@@ -902,10 +919,12 @@ void user_svc1_long_val_wr_ind_handler(ke_msg_id_t const msgid, struct custs1_va
     clock_draw(DRAW_BT | UPDATE_FAST);
     // 打印当前时间信息
     clock_print();
+    beep();
   } else if (param->value[0] == 0x90) {
     // 修改24-12小时制
     h24_format = !h24_format;
     clock_draw(DRAW_BT | UPDATE_FAST);
+    beep();
   } else if (param->value[0] == 0x92) {
     int diff_sec;
     diff_sec = param->value[1];
@@ -914,11 +933,11 @@ void user_svc1_long_val_wr_ind_handler(ke_msg_id_t const msgid, struct custs1_va
     printk("Calibration: %02x\n", diff_sec);
     clock_fixup_set(diff_sec, cal_minute);
     cal_minute = 0;
-  } else if (param->value[0] >= 0xa0) {
-    ota_handle((u8 *)param->value);
+    beep();
   } else if (param->value[0] >= 0xa0) {
     // 处理OTA升级命令
     ota_handle((u8 *)param->value);
+    beep();
   }
 }
 
