@@ -3,3 +3,6 @@ Keil_5/out_DA14585
 Keil_5/*.uvguix.*
 Keil_5/JLinkLog.txt
 
+/.idea/*
+/Keil_5/.vscode/*
+/Keil_5/.DS_Store
